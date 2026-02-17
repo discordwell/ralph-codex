@@ -1,0 +1,31 @@
+{
+  "name": "ralph-codex",
+  "version": "0.1.0",
+  "description": "Iterative Codex Ralph loop harness",
+  "bin": {
+    "ralph-loop": "scripts/ralph-loop.sh"
+  },
+  "files": [
+    "scripts/ralph-loop.sh",
+    "README.md",
+    "SETUP_AND_RUN_RALPH_LOOPS.md"
+  ],
+  "keywords": [
+    "codex",
+    "automation",
+    "loop",
+    "cli"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/discordwell/ralph-codex.git"
+  },
+  "bugs": {
+    "url": "https://github.com/discordwell/ralph-codex/issues"
+  },
+  "homepage": "https://github.com/discordwell/ralph-codex#readme",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=18"
+  }
+}
