@@ -12,9 +12,13 @@ Usage:
   ./ralph-loop.sh --count <N> --prompt <PROMPT> [--session-id <SESSION_ID>] [--new-agent]
     [--plan-prompt <PROMPT>] [--plan-prompt-file <PATH>] [--state-file <PATH>]
     [--summary-prompt <PROMPT>] [--summary-prompt-file <PATH>] [--summary-every <N>]
+    [--no-context-overflow-recovery]
     [--non-interactive] [--sandbox <read-only|workspace-write|danger-full-access>]
     [--bypass-sandbox] [--progress-window <N>] [--min-delta-lines <N>] [--allow-low-progress]
     [--completion-poll-interval <SECONDS>] [--completion-timeout <SECONDS>] [--log-file <PATH>] -- [codex args...]
+
+Tracking:
+  If --log-file is omitted, logs are written to .ralph/ralph-loop-<run_id>.log by default.
 
 Examples:
   ./ralph-loop.sh --count 5 --prompt "Please continue from where you left off."
@@ -47,6 +51,7 @@ sleep_seconds=0
 session_id=""
 interactive=1
 log_file=""
+auto_log_file=0
 state_file=".ralph/session-state.md"
 codex_sandbox=""
 bypass_sandbox=0
@@ -56,6 +61,11 @@ allow_low_progress=0
 new_agent=0
 completion_poll_interval=5
 completion_timeout_seconds=120
+recover_context_overflow=1
+context_overflow_recoveries=0
+fresh_session_starts=0
+fresh_session_recovery_starts=0
+resumed_session_starts=0
 run_id="$(date +%s)"
 repo_root="$(pwd -P)"
 default_model="gpt-5.3-codex-spark"
@@ -97,6 +107,10 @@ while [[ $# -gt 0 ]]; do
       summary_every="$2"
       shift 2
       ;;
+    --no-context-overflow-recovery)
+      recover_context_overflow=0
+      shift
+      ;;
     --session-id)
       session_id="$2"
       shift 2
@@ -119,6 +133,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --log-file)
       log_file="$2"
+      auto_log_file=0
       shift 2
       ;;
     --bypass-sandbox)
@@ -240,7 +255,12 @@ fi
 
 codex_args=("$@")
 
-mkdir -p "$(dirname "$state_file")"
+if [[ -z "$log_file" ]]; then
+  log_file=".ralph/ralph-loop-${run_id}.log"
+  auto_log_file=1
+fi
+
+mkdir -p "$(dirname "$state_file")" "$(dirname "$log_file")"
 codex_sessions_dir="${HOME}/.codex/sessions"
 codex_session_file=""
 
@@ -371,6 +391,27 @@ output_file_signaled_done() {
   if [[ "$normalized" == "$done_sentinel" ]]; then
     return 0
   fi
+  return 1
+}
+
+output_indicates_context_overflow() {
+  local output_file="$1"
+  if [[ -z "$output_file" || ! -f "$output_file" ]]; then
+    return 1
+  fi
+
+  local cleaned
+  cleaned="$(
+    sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g' "$output_file" \
+      | tr -d '\r' \
+      | tr '[:upper:]' '[:lower:]'
+  )"
+
+  if printf '%s\n' "$cleaned" | rg -q \
+    'context_length_exceeded|input exceeds the context window|failed to run pre-sampling compact|error running remote compact task'; then
+    return 0
+  fi
+
   return 1
 }
 
@@ -515,6 +556,13 @@ progress_goal: $min_delta_lines
 progress_delta_since_window: $delta_in_window
 updated_at: $(date -u +'%Y-%m-%dT%H:%M:%SZ')
 summary_count: $summary_count
+tracking_log_file: $log_file
+tracking_auto_log_file: $auto_log_file
+recovery_enabled: $recover_context_overflow
+context_overflow_recoveries: $context_overflow_recoveries
+fresh_session_starts: $fresh_session_starts
+fresh_session_recovery_starts: $fresh_session_recovery_starts
+resumed_session_starts: $resumed_session_starts
 
 ## repo_status
 $repo_status
@@ -645,17 +693,60 @@ log_event() {
   echo "$line" >&2
 }
 
-if [[ -n "$log_file" ]]; then
-  echo "[START] run=$run_id count=$iterations session=${session_id:-last} state_file=$state_file mode=$([ $interactive -eq 1 ] && echo interactive || echo non-interactive) new_agent=$new_agent" > "$log_file"
-fi
+log_tracking() {
+  local message="$1"
+  local timestamp
+  timestamp="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+  local line="[$timestamp] run=$run_id tracking ${message}"
+  echo "$line" >> "$log_file"
+  echo "$line" >&2
+}
+
+echo "[START] run=$run_id count=$iterations session=${session_id:-last} state_file=$state_file mode=$([ $interactive -eq 1 ] && echo interactive || echo non-interactive) new_agent=$new_agent log_file=$log_file auto_log_file=$auto_log_file" > "$log_file"
+log_tracking "event=config recovery_enabled=$recover_context_overflow"
 
 run_index=0
 done_detected=0
+force_fresh_session_next=0
 
 while (( run_index < iterations )); do
   run_index=$((run_index + 1))
   summary_count=$((summary_count + 1))
+
+  use_fresh_session=0
+  if (( force_fresh_session_next == 1 )); then
+    use_fresh_session=1
+    force_fresh_session_next=0
+  fi
+
   session_label="${session_id:-last}"
+  if (( use_fresh_session == 1 )); then
+    session_label="fresh"
+  fi
+
+  session_mode="fresh_initial"
+  if (( use_fresh_session == 1 )); then
+    session_mode="fresh_recovery"
+  elif (( run_index == 1 )); then
+    if [[ -n "$session_id" ]]; then
+      session_mode="resume_session"
+    fi
+  else
+    if [[ -n "$session_id" ]]; then
+      session_mode="resume_session"
+    else
+      session_mode="resume_last"
+    fi
+  fi
+  if [[ "$session_mode" == resume_* ]]; then
+    resumed_session_starts=$((resumed_session_starts + 1))
+  else
+    fresh_session_starts=$((fresh_session_starts + 1))
+  fi
+  if [[ "$session_mode" == "fresh_recovery" ]]; then
+    fresh_session_recovery_starts=$((fresh_session_recovery_starts + 1))
+  fi
+
   if (( run_index == 1 )); then
     prompt_to_send="$(build_context_prompt "planning" "$plan_prompt" "$run_index")"
   elif (( summary_count % summary_every == 0 )); then
@@ -670,6 +761,7 @@ while (( run_index < iterations )); do
   elif (( summary_count % summary_every == 0 )); then
     run_phase="summary"
   fi
+  log_tracking "event=iteration_start iter=${run_index}/${iterations} phase=$run_phase session_mode=$session_mode session=${session_label}"
   log_event "$run_index" "starting" "$run_phase" "" "" "$session_label"
   iteration_start=$(date +%s)
 
@@ -679,16 +771,20 @@ while (( run_index < iterations )); do
     iteration_cmd+=(--config "model_reasoning_effort=\"$default_plan_reasoning_effort\"")
   fi
 
-  if (( run_index == 1 )); then
-    if [[ -n "$session_id" ]]; then
-      iteration_cmd+=(resume "$session_id")
+  if (( use_fresh_session == 0 )); then
+    if (( run_index == 1 )); then
+      if [[ -n "$session_id" ]]; then
+        iteration_cmd+=(resume "$session_id")
+      fi
+    else
+      if [[ -n "$session_id" ]]; then
+        iteration_cmd+=(resume "$session_id")
+      else
+        iteration_cmd+=(resume --last)
+      fi
     fi
   else
-    if [[ -n "$session_id" ]]; then
-      iteration_cmd+=(resume "$session_id")
-    else
-      iteration_cmd+=(resume --last)
-    fi
+    echo "[RALPH-LOOP] iteration $run_index starting a fresh Codex session after context-overflow recovery." >&2
   fi
 
   if "${iteration_cmd[@]}" "$prompt_to_send" > "$output_file" 2>&1; then
@@ -700,6 +796,16 @@ while (( run_index < iterations )); do
   detected_session_id="$(extract_session_id "$output_file")"
   if [[ -n "$detected_session_id" ]]; then
     session_id="$detected_session_id"
+  fi
+
+  if (( recover_context_overflow == 1 )) && [[ "$exit_code" != "0" ]] && output_indicates_context_overflow "$output_file"; then
+    context_overflow_recoveries=$((context_overflow_recoveries + 1))
+    echo "[RALPH-LOOP] context-window failure detected; next iteration will start a fresh session with state warmstart." >&2
+    echo "[RECOVER] run=$run_id iter=${run_index}/${iterations} reason=context_overflow action=fresh_session_next" >> "$log_file"
+    log_tracking "event=context_overflow_detected iter=${run_index}/${iterations} action=fresh_session_next count=$context_overflow_recoveries"
+    session_id=""
+    codex_session_file=""
+    force_fresh_session_next=1
   fi
 
   session_file="$(resolve_session_file "$session_id")"
@@ -725,9 +831,7 @@ while (( run_index < iterations )); do
 
   if (( done_detected == 1 )); then
     echo "[RALPH-LOOP] completion sentinel detected (${done_sentinel}); ending loop early at iteration $run_index." >&2
-    if [[ -n "$log_file" ]]; then
-      echo "[DONE] run=$run_id iter=${run_index}/${iterations} sentinel=${done_sentinel}" >> "$log_file"
-    fi
+    echo "[DONE] run=$run_id iter=${run_index}/${iterations} sentinel=${done_sentinel}" >> "$log_file"
     break
   fi
 
@@ -735,9 +839,7 @@ while (( run_index < iterations )); do
     if (( allow_low_progress == 0 && window_delta < min_delta_lines )); then
       delta_msg="Iteration ${run_index} progress gate failed: changed ${window_delta} lines since checkpoint, below required ${min_delta_lines} over last ${progress_window} iterations."
       echo "$delta_msg" >&2
-      if [[ -n "$log_file" ]]; then
-        echo "$delta_msg" >> "$log_file"
-      fi
+      echo "$delta_msg" >> "$log_file"
       exit 1
     fi
     window_start_lines="$current_changed_lines"
@@ -754,6 +856,5 @@ while (( run_index < iterations )); do
   fi
 done
 
-if [[ -n "$log_file" ]]; then
-  echo "[END] run=$run_id complete exit_last=$exit_code done_detected=$done_detected" >> "$log_file"
-fi
+log_tracking "event=summary context_overflow_recoveries=$context_overflow_recoveries fresh_session_starts=$fresh_session_starts fresh_session_recovery_starts=$fresh_session_recovery_starts resumed_session_starts=$resumed_session_starts"
+echo "[END] run=$run_id complete exit_last=$exit_code done_detected=$done_detected context_overflow_recoveries=$context_overflow_recoveries fresh_session_starts=$fresh_session_starts fresh_session_recovery_starts=$fresh_session_recovery_starts resumed_session_starts=$resumed_session_starts" >> "$log_file"

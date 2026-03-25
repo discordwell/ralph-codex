@@ -50,7 +50,7 @@ ralph-loop \
 
 Useful outputs:
 - `.ralph/session-state.md` (or custom state file)
-- Optional `--log-file <path>`
+- Default tracking log: `.ralph/ralph-loop-<run_id>.log` (or custom `--log-file <path>`)
 
 ## 4) Recommended Prompt File Workflow
 Use a prompt file so objectives stay explicit.
@@ -148,8 +148,15 @@ ralph-loop \
 - `--progress-window N` + `--min-delta-lines X`: progress gate.
 - `--completion-poll-interval` / `--completion-timeout`: turn completion polling behavior.
 - `--state-file`: isolate loop state per objective.
+- `--no-context-overflow-recovery`: disable automatic fresh-session recovery after context-window failures.
 
-## 9) Notes
+## 9) Tracking Markers
+Default logs include structured tracking and recovery markers:
+- `tracking event=iteration_start ... session_mode=...`
+- `[RECOVER] ... reason=context_overflow action=fresh_session_next`
+- `tracking event=summary ... context_overflow_recoveries=...`
+
+## 10) Notes
 - Keep one objective per loop prompt.
 - Keep validation commands explicit in prompt.
 - Prefer worktrees for concurrent loops.

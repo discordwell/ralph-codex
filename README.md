@@ -23,6 +23,13 @@ npm install -g github:discordwell/ralph-codex
 ralph-loop --help
 ```
 
+## Tracking Defaults
+- Every run writes a tracking log by default at `.ralph/ralph-loop-<run_id>.log` (unless `--log-file` is provided).
+- Context-window recovery is enabled by default; disable with `--no-context-overflow-recovery`.
+- Tracking logs include:
+  - `[RECOVER]` when a context-overflow failure is detected.
+  - `tracking event=iteration_start` with the per-iteration session mode (`resume_session`, `resume_last`, `fresh_initial`, `fresh_recovery`).
+
 Manual local path still works:
 ```bash
 cd /Users/discordwell/Projects/ralph-codex
