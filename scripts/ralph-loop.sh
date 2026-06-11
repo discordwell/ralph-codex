@@ -9,10 +9,10 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  ./ralph-loop.sh --count <N> --prompt <PROMPT> [--session-id <SESSION_ID>] [--new-agent]
+  ./ralph-loop.sh --count <N> --prompt <PROMPT> [--prompt-file <PATH>] [--session-id <SESSION_ID>] [--new-agent]
     [--plan-prompt <PROMPT>] [--plan-prompt-file <PATH>] [--state-file <PATH>]
     [--summary-prompt <PROMPT>] [--summary-prompt-file <PATH>] [--summary-every <N>]
-    [--no-context-overflow-recovery]
+    [--no-context-overflow-recovery] [--sleep <SECONDS>]
     [--non-interactive] [--sandbox <read-only|workspace-write|danger-full-access>]
     [--bypass-sandbox] [--progress-window <N>] [--min-delta-lines <N>] [--allow-low-progress]
     [--completion-poll-interval <SECONDS>] [--completion-timeout <SECONDS>] [--log-file <PATH>] -- [codex args...]
@@ -36,6 +36,11 @@ Examples:
 Done condition:
   If Codex replies with exactly "done" (single token, no extra text), the loop exits early with success.
 EOF
+}
+
+usage_error() {
+  echo "Error: $1" >&2
+  usage >&2
   exit 1
 }
 
@@ -125,8 +130,7 @@ while [[ $# -gt 0 ]]; do
         read-only|workspace-write|danger-full-access)
           ;;
         *)
-          echo "Error: --sandbox must be read-only, workspace-write, or danger-full-access." >&2
-          usage
+          usage_error "--sandbox must be read-only, workspace-write, or danger-full-access."
           ;;
       esac
       shift 2
@@ -178,6 +182,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     -h|--help)
       usage
+      exit 0
       ;;
     *)
       break
@@ -198,8 +203,7 @@ if [[ "$summary_prompt_file" != "" ]]; then
 fi
 
 if [[ "$prompt" == "" ]]; then
-  echo "Error: a prompt is required. Use --prompt or --prompt-file." >&2
-  usage
+  usage_error "a prompt is required. Use --prompt or --prompt-file."
 fi
 
 if [[ "$plan_prompt" == "" ]]; then
@@ -226,32 +230,47 @@ Completion rule:
 Keep it concise and actionable."
 fi
 
-if [[ "$iterations" -le 0 ]]; then
-  echo "Error: --count must be a positive integer." >&2
-  usage
-fi
+is_uint() {
+  [[ "$1" =~ ^[0-9]+$ ]]
+}
 
-if [[ "$progress_window" -le 0 ]]; then
+if ! is_uint "$iterations" || (( 10#$iterations <= 0 )); then
+  usage_error "--count must be a positive integer."
+fi
+iterations=$((10#$iterations))
+
+if ! is_uint "$progress_window" || (( 10#$progress_window <= 0 )); then
   echo "Error: --progress-window must be a positive integer." >&2
   exit 1
 fi
-if [[ "$min_delta_lines" -lt 0 ]]; then
+progress_window=$((10#$progress_window))
+if ! is_uint "$min_delta_lines"; then
   echo "Error: --min-delta-lines must be zero or greater." >&2
   exit 1
 fi
-if [[ "$completion_poll_interval" -lt 0 ]]; then
+min_delta_lines=$((10#$min_delta_lines))
+if ! is_uint "$completion_poll_interval"; then
   echo "Error: --completion-poll-interval must be zero or greater." >&2
   exit 1
 fi
-if [[ "$completion_timeout_seconds" -lt 0 ]]; then
+completion_poll_interval=$((10#$completion_poll_interval))
+if ! is_uint "$completion_timeout_seconds"; then
   echo "Error: --completion-timeout must be zero or greater." >&2
   exit 1
 fi
+completion_timeout_seconds=$((10#$completion_timeout_seconds))
 
-if [[ "$summary_every" -le 0 ]]; then
+if ! is_uint "$summary_every" || (( 10#$summary_every <= 0 )); then
   echo "Error: --summary-every must be a positive integer." >&2
   exit 1
 fi
+summary_every=$((10#$summary_every))
+
+if ! is_uint "$sleep_seconds"; then
+  echo "Error: --sleep must be zero or greater (whole seconds)." >&2
+  exit 1
+fi
+sleep_seconds=$((10#$sleep_seconds))
 
 codex_args=("$@")
 
@@ -602,7 +621,7 @@ normalize_codex_arg() {
       continue
     fi
 
-    if [[ "$arg" == "--no-alt-screen" && interactive -eq 0 ]]; then
+    if [[ "$arg" == "--no-alt-screen" ]] && (( interactive == 0 )); then
       i=$((i + 1))
       continue
     fi
@@ -611,11 +630,19 @@ normalize_codex_arg() {
     i=$((i + 1))
   done
 
-  codex_args=("${normalized[@]}")
+  # "${normalized[@]}" on an empty array is an unbound-variable error under
+  # set -u in bash < 4.4 (macOS ships 3.2), so guard the reassignment.
+  if (( ${#normalized[@]} > 0 )); then
+    codex_args=("${normalized[@]}")
+  else
+    codex_args=()
+  fi
 }
 
 if (( ${#codex_args[@]} > 0 )); then
   normalize_codex_arg
+fi
+if (( ${#codex_args[@]} > 0 )); then
   codex_base_cmd+=("${codex_args[@]}")
 fi
 
@@ -665,7 +692,6 @@ count_changed_lines() {
 }
 
 window_start_lines="$(count_changed_lines)"
-window_start_iter=0
 summary_count=0
 if [[ -f "$state_file" ]]; then
   persisted_summary_count="$(awk '/^summary_count:[[:space:]]*[0-9]+$/ { sub(/^summary_count:[[:space:]]*/, ""); print $1; exit }' "$state_file")"
@@ -702,7 +728,9 @@ log_tracking() {
   echo "$line" >&2
 }
 
-echo "[START] run=$run_id count=$iterations session=${session_id:-last} state_file=$state_file mode=$([ $interactive -eq 1 ] && echo interactive || echo non-interactive) new_agent=$new_agent log_file=$log_file auto_log_file=$auto_log_file" > "$log_file"
+# Append so resuming with the same --log-file keeps prior runs' tracking
+# history; each run is delimited by its own [START]/[END] markers.
+echo "[START] run=$run_id count=$iterations session=${session_id:-last} state_file=$state_file mode=$([ "$interactive" -eq 1 ] && echo interactive || echo non-interactive) new_agent=$new_agent log_file=$log_file auto_log_file=$auto_log_file" >> "$log_file"
 log_tracking "event=config recovery_enabled=$recover_context_overflow"
 
 run_index=0
@@ -843,7 +871,6 @@ while (( run_index < iterations )); do
       exit 1
     fi
     window_start_lines="$current_changed_lines"
-    window_start_iter="$run_index"
   fi
 
   if (( run_index >= iterations )); then

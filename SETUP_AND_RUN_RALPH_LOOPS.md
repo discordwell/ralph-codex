@@ -148,7 +148,10 @@ ralph-loop \
 - `--progress-window N` + `--min-delta-lines X`: progress gate.
 - `--completion-poll-interval` / `--completion-timeout`: turn completion polling behavior.
 - `--state-file`: isolate loop state per objective.
+- `--sleep N`: pause N whole seconds between iterations.
 - `--no-context-overflow-recovery`: disable automatic fresh-session recovery after context-window failures.
+
+Note: tracking logs append across runs, so resuming with the same `--log-file` keeps the earlier run's history (each run is delimited by `[START]`/`[END]`).
 
 ## 9) Tracking Markers
 Default logs include structured tracking and recovery markers:

@@ -5,6 +5,9 @@
   "bin": {
     "ralph-loop": "scripts/ralph-loop.sh"
   },
+  "scripts": {
+    "test": "tests/run-tests.sh"
+  },
   "files": [
     "scripts/ralph-loop.sh",
     "README.md",

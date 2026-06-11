@@ -4,7 +4,9 @@ Utilities and docs for running iterative Codex "Ralph loops".
 
 ## Contents
 - `scripts/ralph-loop.sh` — main loop harness
+- `tests/run-tests.sh` — test suite (mock `codex`, no real sessions touched)
 - `SETUP_AND_RUN_RALPH_LOOPS.md` — setup + run guide with examples
+- `ARCHITECTURE.md` — how the loop, session modes, and recovery fit together
 
 ## Install
 ### Homebrew (macOS/Linuxbrew)
@@ -23,8 +25,16 @@ npm install -g github:discordwell/ralph-codex
 ralph-loop --help
 ```
 
+## Tests
+```bash
+tests/run-tests.sh   # or: npm test
+```
+The suite shadows `codex` with a mock binary and sandboxes `$HOME`, so it never
+touches real Codex sessions. Set `RALPH_LOOP_BIN` to test an installed copy.
+
 ## Tracking Defaults
 - Every run writes a tracking log by default at `.ralph/ralph-loop-<run_id>.log` (unless `--log-file` is provided).
+- Logs append across runs: reusing the same `--log-file` (e.g. on resume) keeps prior history, with each run delimited by `[START]`/`[END]` markers.
 - Context-window recovery is enabled by default; disable with `--no-context-overflow-recovery`.
 - Tracking logs include:
   - `[RECOVER]` when a context-overflow failure is detected.
