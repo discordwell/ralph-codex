@@ -33,6 +33,10 @@ Examples:
   ./ralph-loop.sh --count 20 --prompt "..." --session-id <SESSION_ID> --non-interactive --completion-poll-interval 5 --completion-timeout 120 -- -c model="gpt-5.3-codex-spark"
   ./ralph-loop.sh --count 25 --prompt "..." --session-id <SESSION_ID> --summary-every 25 -- -c model="gpt-5.3-codex-spark"
 
+Other:
+  -h, --help       Print this help and exit.
+  -V, --version    Print the ralph-loop version and exit.
+
 Done condition:
   If Codex replies with exactly "done" (single token, no extra text), the loop exits early with success.
 EOF
@@ -42,6 +46,20 @@ usage_error() {
   echo "Error: $1" >&2
   usage >&2
   exit 1
+}
+
+version() {
+  echo "ralph-loop $ralph_loop_version"
+}
+
+require_arg() {
+  # require_arg <remaining-arg-count> <flag>
+  # Guards value-taking flags so a missing value (e.g. `--count` as the final
+  # argument) is a clean usage error instead of a `$2: unbound variable` crash
+  # under `set -u`.
+  if (( $1 < 2 )); then
+    usage_error "option $2 requires a value."
+  fi
 }
 
 iterations=1
@@ -71,44 +89,56 @@ context_overflow_recoveries=0
 fresh_session_starts=0
 fresh_session_recovery_starts=0
 resumed_session_starts=0
-run_id="$(date +%s)"
+# Append the PID so two runs started in the same second (e.g. parallel loops)
+# get distinct default log files instead of interleaving into one.
+run_id="$(date +%s)-$$"
 repo_root="$(pwd -P)"
 default_model="gpt-5.3-codex-spark"
 default_reasoning_effort="high"
 default_plan_reasoning_effort="extra_high"
 done_sentinel="done"
+# Keep in sync with package.json "version" (tests/run-tests.sh asserts this).
+ralph_loop_version="0.2.0"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -c|--count)
+      require_arg "$#" "$1"
       iterations="$2"
       shift 2
       ;;
     -p|--prompt)
+      require_arg "$#" "$1"
       prompt="$2"
       shift 2
       ;;
     -f|--prompt-file)
+      require_arg "$#" "$1"
       prompt_file="$2"
       shift 2
       ;;
     --plan-prompt)
+      require_arg "$#" "$1"
       plan_prompt="$2"
       shift 2
       ;;
     --plan-prompt-file)
+      require_arg "$#" "$1"
       plan_prompt_file="$2"
       shift 2
       ;;
     --summary-prompt)
+      require_arg "$#" "$1"
       summary_prompt="$2"
       shift 2
       ;;
     --summary-prompt-file)
+      require_arg "$#" "$1"
       summary_prompt_file="$2"
       shift 2
       ;;
     --summary-every)
+      require_arg "$#" "$1"
       summary_every="$2"
       shift 2
       ;;
@@ -117,14 +147,17 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --session-id)
+      require_arg "$#" "$1"
       session_id="$2"
       shift 2
       ;;
     --state-file)
+      require_arg "$#" "$1"
       state_file="$2"
       shift 2
       ;;
     --sandbox)
+      require_arg "$#" "$1"
       codex_sandbox="$2"
       case "$codex_sandbox" in
         read-only|workspace-write|danger-full-access)
@@ -136,6 +169,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --log-file)
+      require_arg "$#" "$1"
       log_file="$2"
       auto_log_file=0
       shift 2
@@ -145,18 +179,22 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --progress-window)
+      require_arg "$#" "$1"
       progress_window="$2"
       shift 2
       ;;
     --min-delta-lines)
+      require_arg "$#" "$1"
       min_delta_lines="$2"
       shift 2
       ;;
     --completion-poll-interval)
+      require_arg "$#" "$1"
       completion_poll_interval="$2"
       shift 2
       ;;
     --completion-timeout)
+      require_arg "$#" "$1"
       completion_timeout_seconds="$2"
       shift 2
       ;;
@@ -173,6 +211,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -s|--sleep)
+      require_arg "$#" "$1"
       sleep_seconds="$2"
       shift 2
       ;;
@@ -182,6 +221,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     -h|--help)
       usage
+      exit 0
+      ;;
+    -V|--version)
+      version
       exit 0
       ;;
     *)
@@ -570,6 +613,7 @@ iteration: $iteration / $iterations
 exit_code: $exit_code
 elapsed_seconds: $elapsed
 total_changed_lines: $total_changed_lines
+progress_basis: ${base_commit:-working-tree}
 progress_window: $progress_window
 progress_goal: $min_delta_lines
 progress_delta_since_window: $delta_in_window
@@ -686,8 +730,22 @@ if (( new_agent == 1 )); then
   session_id=""
 fi
 
+# Baseline commit captured at run start. The progress gate measures total churn
+# (committed + staged + unstaged) since this point, so committing mid-run still
+# counts as progress. Falls back to working-tree-only churn when there is no
+# HEAD yet (e.g. a repo with no commits).
+base_commit="$(git -C "$repo_root" rev-parse --verify --quiet HEAD 2>/dev/null || true)"
+
 count_changed_lines() {
-  git -C "$repo_root" diff --numstat 2>/dev/null \
+  local diff_args=(diff --numstat)
+  # Use the baseline only while it is still a reachable commit object. An agent
+  # that rebases/amends and then prunes (e.g. `git gc --prune=now`) could orphan
+  # it; `git diff <gone-sha>` would exit 128 and, under `set -euo pipefail`, abort
+  # the whole loop. Fall back to working-tree churn in that case.
+  if [[ -n "$base_commit" ]] && git -C "$repo_root" cat-file -e "${base_commit}^{commit}" 2>/dev/null; then
+    diff_args+=("$base_commit")
+  fi
+  git -C "$repo_root" "${diff_args[@]}" 2>/dev/null \
     | awk '{sum += ($1 ~ /^[0-9]+$/ ? $1 : 0) + ($2 ~ /^[0-9]+$/ ? $2 : 0)} END {print sum+0}'
 }
 
@@ -736,6 +794,19 @@ log_tracking "event=config recovery_enabled=$recover_context_overflow"
 run_index=0
 done_detected=0
 force_fresh_session_next=0
+output_file=""
+
+# Remove the current iteration's temp output file if the script exits before the
+# inline `rm -f` runs (e.g. a `set -e` abort or the progress-gate `exit 1`). Only
+# EXIT is trapped on purpose: trapping INT/TERM to run `exit` would defer the
+# signal until the foreground `codex` turn finishes, making `kill <PID>` (the
+# documented stop) wait minutes instead of stopping promptly. rm -f is idempotent.
+cleanup() {
+  if [[ -n "${output_file:-}" ]]; then
+    rm -f "$output_file" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
 
 while (( run_index < iterations )); do
   run_index=$((run_index + 1))

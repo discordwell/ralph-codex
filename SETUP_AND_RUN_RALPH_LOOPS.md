@@ -145,11 +145,12 @@ ralph-loop \
 ## 8) Helpful Flags
 - `--new-agent`: force a fresh Codex session instead of `resume`.
 - `--summary-every N`: periodic summary turns.
-- `--progress-window N` + `--min-delta-lines X`: progress gate.
+- `--progress-window N` + `--min-delta-lines X`: progress gate. Counts churn (committed + staged + unstaged) since the run's starting commit, so committing mid-run still registers as progress. `--allow-low-progress` disables the gate.
 - `--completion-poll-interval` / `--completion-timeout`: turn completion polling behavior.
 - `--state-file`: isolate loop state per objective.
 - `--sleep N`: pause N whole seconds between iterations.
 - `--no-context-overflow-recovery`: disable automatic fresh-session recovery after context-window failures.
+- `-h`/`--help`, `-V`/`--version`: print usage or the version and exit.
 
 Note: tracking logs append across runs, so resuming with the same `--log-file` keeps the earlier run's history (each run is delimited by `[START]`/`[END]`).
 

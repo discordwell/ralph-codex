@@ -54,16 +54,20 @@ the context prompt's state snapshot. Disable with
 
 ## Progress gate
 
-`count_changed_lines` sums `git diff --numstat` in the working tree. Every
-`--progress-window` iterations the delta since the last checkpoint must reach
-`--min-delta-lines` or the run aborts (exit 1). Note the metric only sees
-uncommitted changes — if the agent commits as it goes, pass
-`--allow-low-progress` (the documented invocations do).
+At run start the harness records `base_commit` (the current `HEAD`).
+`count_changed_lines` then sums `git diff --numstat <base_commit>`, i.e. total
+churn — committed, staged, and unstaged — since the run began, so committing as
+you go still counts as progress. (When the repo has no commits yet there is no
+`HEAD`, so it falls back to working-tree-only churn.) Every `--progress-window`
+iterations the delta since the last checkpoint must reach `--min-delta-lines` or
+the run aborts (exit 1). The basis is recorded as `progress_basis` in the state
+file. Use `--allow-low-progress` to disable the gate entirely.
 
 ## Files written (in the target repo)
 
 - `.ralph/session-state.md` (or `--state-file`) — rewritten every iteration;
-  also the source of the persisted `summary_count`.
+  also the source of the persisted `summary_count`. Records `progress_basis`
+  (the `base_commit` SHA, or `working-tree` when there is no `HEAD`).
 - `.ralph/ralph-loop-<run_id>.log` (or `--log-file`) — append-only tracking
   log: `[START]`/`[END]` run delimiters, per-iteration `tracking event=` lines,
   `[RECOVER]` and `[DONE]` markers.
@@ -75,6 +79,13 @@ Model defaults (`gpt-5.3-codex-spark`, reasoning effort `high`, planning
 `-c/--config` after `--`. Hard dependencies: `git`, `rg` (session lookups and
 overflow detection); `jq` is optional (assistant-text done detection degrades
 to output-file matching without it). Bash 3.2+ (macOS stock) is supported.
+
+`-h/--help` and `-V/--version` print and exit 0; the script version
+(`ralph_loop_version`) is kept in lockstep with `package.json` by a test.
+Value-taking flags reject a missing value with a usage error rather than
+crashing under `set -u`, and the per-iteration temp output file is removed by an
+`EXIT` trap if the script exits early (e.g. a `set -e` abort or the progress-gate
+`exit 1`) before its inline cleanup runs.
 
 ## Tests
 

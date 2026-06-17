@@ -23,6 +23,7 @@ npm install -g github:discordwell/ralph-codex
 ## Quick Start
 ```bash
 ralph-loop --help
+ralph-loop --version
 ```
 
 ## Tests
@@ -36,6 +37,7 @@ touches real Codex sessions. Set `RALPH_LOOP_BIN` to test an installed copy.
 - Every run writes a tracking log by default at `.ralph/ralph-loop-<run_id>.log` (unless `--log-file` is provided).
 - Logs append across runs: reusing the same `--log-file` (e.g. on resume) keeps prior history, with each run delimited by `[START]`/`[END]` markers.
 - Context-window recovery is enabled by default; disable with `--no-context-overflow-recovery`.
+- The progress gate counts churn (committed + staged + unstaged) since the run's starting commit, so committing as you go still counts as progress; `--allow-low-progress` disables the gate.
 - Tracking logs include:
   - `[RECOVER]` when a context-overflow failure is detected.
   - `tracking event=iteration_start` with the per-iteration session mode (`resume_session`, `resume_last`, `fresh_initial`, `fresh_recovery`).

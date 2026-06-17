@@ -44,6 +44,11 @@ dir="${MOCK_CODEX_DIR:?}"
 n=$(( $(cat "$dir/calls" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$dir/calls"
 printf '%s\n' "$@" > "$dir/argv_$n"
+# Optional per-call side effect (run in the harness's working dir), e.g. to
+# simulate an agent that edits and commits files.
+if [ -f "$dir/action_$n" ]; then
+  bash "$dir/action_$n"
+fi
 if [ -f "$dir/behavior_$n" ]; then
   code="$(head -n 1 "$dir/behavior_$n")"
   tail -n +2 "$dir/behavior_$n"
@@ -93,6 +98,20 @@ set_behavior() {
   local n="$1" code="$2"
   shift 2
   { echo "$code"; printf '%s\n' "$@"; } > "$MOCK_CODEX_DIR/behavior_$n"
+}
+
+set_action() {
+  # set_action <call#> <shell snippet run in the work dir on that call>
+  local n="$1"
+  shift
+  printf '%s\n' "$*" > "$MOCK_CODEX_DIR/action_$n"
+}
+
+# Configure a committable git identity in the current work dir (sandboxed HOME
+# has none), for tests where the mock agent commits.
+init_git_identity() {
+  git config user.email "ralph-test@example.com"
+  git config user.name "Ralph Test"
 }
 
 default_log() {
@@ -304,6 +323,105 @@ test_allow_low_progress_bypasses_gate() {
   fi
 }
 
+test_progress_gate_counts_committed_lines() {
+  # Regression: the gate used to measure only the working tree, so an agent that
+  # committed its work registered as zero progress (which is why every documented
+  # invocation passes --allow-low-progress). It must now count committed churn
+  # since the run started.
+  init_git_identity
+  printf 'seed\n' > seed.txt
+  git add seed.txt
+  git commit -qm seed
+  # Baseline is captured at run start (this seed commit), before the agent works.
+  local base_sha
+  base_sha="$(git rev-parse HEAD)"
+  # The action COMMITS its work, so the working tree is clean afterwards — the old
+  # working-tree-only metric would read 0 here, the new base-relative metric reads 6.
+  set_action 1 'printf "a\nb\nc\nd\ne\nf\n" > work.txt; git add work.txt; git commit -qm "agent work"'
+  run_ralph --count 1 --prompt "continue" --non-interactive \
+    --progress-window 1 --min-delta-lines 5
+  # No pending change for work.txt proves it was committed (not merely staged: a
+  # staged-only file would show "A  work.txt"), so the 6 counted lines can only
+  # come from counting churn since base_sha, not from the working tree.
+  if [ "$ralph_status" -eq 0 ] \
+    && [ -z "$(git status --short -- work.txt)" ] \
+    && grep -q "^total_changed_lines: 6$" .ralph/session-state.md \
+    && grep -q "^progress_basis: ${base_sha}$" .ralph/session-state.md; then
+    t_pass "progress gate counts committed lines since run start"
+  else
+    t_fail "progress gate counts committed lines since run start" "status=$ralph_status"
+  fi
+}
+
+test_version_flag_and_sync() {
+  run_ralph --version
+  if [ "$ralph_status" -ne 0 ] \
+    || ! grep -Eq '^ralph-loop [0-9]+\.[0-9]+\.[0-9]+' "$ralph_out"; then
+    t_fail "--version prints semver and exits 0" "status=$ralph_status"
+    return
+  fi
+  # When exercising the in-repo script (not an installed binary via
+  # RALPH_LOOP_BIN, which may legitimately be a different version), the script
+  # version must match package.json so the two never silently drift.
+  if [ -z "${RALPH_LOOP_BIN:-}" ] && [ -f "$REPO_ROOT/package.json" ]; then
+    local pkg
+    pkg="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$REPO_ROOT/package.json" | head -n1)"
+    if [ -n "$pkg" ] && ! grep -q "ralph-loop $pkg" "$ralph_out"; then
+      t_fail "--version matches package.json ($pkg)" "got=$(cat "$ralph_out")"
+      return
+    fi
+  fi
+  t_pass "--version prints semver, exits 0, and matches package.json"
+}
+
+test_missing_flag_value_is_clean_error() {
+  # Regression: a value-taking flag given no value used to crash with
+  # "$2: unbound variable" under set -u instead of a usage error.
+  local flag ok=1
+  for flag in --count --prompt --session-id --sleep --log-file --min-delta-lines; do
+    run_ralph "$flag"
+    if [ "$ralph_status" -ne 1 ] \
+      || ! grep -q "option $flag requires a value" "$ralph_out" \
+      || grep -q "unbound variable" "$ralph_out"; then
+      ok=0
+      t_fail "missing value for $flag is a clean usage error" "status=$ralph_status"
+      break
+    fi
+  done
+  if [ "$ok" -eq 1 ]; then
+    t_pass "missing value for value-taking flags is a clean usage error"
+  fi
+}
+
+test_done_via_session_assistant_text() {
+  # Exercises the jq/session path of done-detection: the visible mock output does
+  # NOT end in "done", so completion can only be detected by parsing the assistant
+  # message in the session .jsonl. (The output-file fallback alone would not fire.)
+  if ! command -v jq >/dev/null 2>&1; then
+    t_pass "done via session assistant text (skipped: jq not installed)"
+    return
+  fi
+  local sid="dddddddd-1111-2222-3333-444444444444"
+  local sess="$HOME/.codex/sessions/rollout-$sid.jsonl"
+  mkdir -p "$(dirname "$sess")"
+  {
+    printf '%s\n' '{"type":"turn_context","payload":{"turn_id":"T1"}}'
+    printf '%s\n' '{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}'
+    printf '%s\n' '{"type":"event_msg","payload":{"type":"task_complete"}}'
+  } > "$sess"
+  set_behavior 1 0 "session id: $sid" "still thinking"
+  run_ralph --count 3 --prompt "continue" --non-interactive --allow-low-progress
+  local log
+  log="$(default_log)"
+  if [ "$ralph_status" -eq 0 ] \
+    && [ "$(mock_calls)" -eq 1 ] \
+    && [ -n "$log" ] && grep -q "\[DONE\]" "$log"; then
+    t_pass "done detected via session assistant text (jq path) ends loop"
+  else
+    t_fail "done detected via session assistant text (jq path) ends loop" "status=$ralph_status calls=$(mock_calls)"
+  fi
+}
+
 # --- runner ------------------------------------------------------------------
 
 ORIG_HOME="$HOME"
@@ -325,6 +443,10 @@ test_log_file_appends_across_runs
 test_default_tracking_log_and_state_file
 test_progress_gate_blocks_low_progress
 test_allow_low_progress_bypasses_gate
+test_progress_gate_counts_committed_lines
+test_version_flag_and_sync
+test_missing_flag_value_is_clean_error
+test_done_via_session_assistant_text
 "
 
 for t in $tests; do
