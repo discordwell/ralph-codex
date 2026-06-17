@@ -62,6 +62,22 @@ require_arg() {
   fi
 }
 
+require_readable_file() {
+  # require_readable_file <flag> <path>
+  # Validates a path passed to a *-file flag before it is read, so a missing or
+  # unreadable file is a clean usage error instead of a raw `cat:` message that
+  # aborts the run under `set -e`. Kept outside the command substitution that
+  # reads the file so usage_error's `exit` terminates the main shell, not a
+  # subshell.
+  local flag="$1" path="$2"
+  if [[ ! -f "$path" ]]; then
+    usage_error "$flag file not found: $path"
+  fi
+  if [[ ! -r "$path" ]]; then
+    usage_error "$flag file is not readable: $path"
+  fi
+}
+
 iterations=1
 prompt=""
 prompt_file=""
@@ -98,7 +114,7 @@ default_reasoning_effort="high"
 default_plan_reasoning_effort="extra_high"
 done_sentinel="done"
 # Keep in sync with package.json "version" (tests/run-tests.sh asserts this).
-ralph_loop_version="0.2.0"
+ralph_loop_version="0.2.1"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -227,6 +243,13 @@ while [[ $# -gt 0 ]]; do
       version
       exit 0
       ;;
+    --*)
+      # An unrecognized long option before `--` is almost always a typo of a
+      # ralph-loop flag (e.g. `--allow-low-progres`). Silently treating it as a
+      # codex pass-through would, for an unattended loop, quietly change behavior
+      # (here, leave the progress gate enabled). Reject it and point at `--`.
+      usage_error "unknown option: $1 (pass codex arguments after --)."
+      ;;
     *)
       break
       ;;
@@ -234,14 +257,17 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "$prompt_file" != "" ]]; then
+  require_readable_file --prompt-file "$prompt_file"
   prompt="$(cat "$prompt_file")"
 fi
 
 if [[ "$plan_prompt_file" != "" ]]; then
+  require_readable_file --plan-prompt-file "$plan_prompt_file"
   plan_prompt="$(cat "$plan_prompt_file")"
 fi
 
 if [[ "$summary_prompt_file" != "" ]]; then
+  require_readable_file --summary-prompt-file "$summary_prompt_file"
   summary_prompt="$(cat "$summary_prompt_file")"
 fi
 

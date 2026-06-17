@@ -82,10 +82,23 @@ to output-file matching without it). Bash 3.2+ (macOS stock) is supported.
 
 `-h/--help` and `-V/--version` print and exit 0; the script version
 (`ralph_loop_version`) is kept in lockstep with `package.json` by a test.
-Value-taking flags reject a missing value with a usage error rather than
-crashing under `set -u`, and the per-iteration temp output file is removed by an
-`EXIT` trap if the script exits early (e.g. a `set -e` abort or the progress-gate
-`exit 1`) before its inline cleanup runs.
+Argument handling fails fast and cleanly rather than silently or with a raw
+error:
+
+- Value-taking flags reject a missing value with a usage error rather than
+  crashing under `set -u`.
+- `--prompt-file` / `--plan-prompt-file` / `--summary-prompt-file` validate the
+  path (`require_readable_file`) before reading it, so a missing or unreadable
+  file is a usage error instead of a raw `cat:` message that aborts under
+  `set -e`.
+- An unrecognized long option *before* `--` (e.g. a typo'd `--allow-low-progres`)
+  is a usage error, not a silent pass-through to codex that would quietly change
+  loop behavior. Arguments intended for codex must come after `--`; anything
+  there is forwarded verbatim.
+
+The per-iteration temp output file is removed by an `EXIT` trap if the script
+exits early (e.g. a `set -e` abort or the progress-gate `exit 1`) before its
+inline cleanup runs.
 
 ## Tests
 

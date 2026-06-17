@@ -393,6 +393,120 @@ test_missing_flag_value_is_clean_error() {
   fi
 }
 
+test_prompt_file_is_read() {
+  # The --prompt-file contents become the execution base prompt, which
+  # build_context_prompt embeds at the top of the prompt argv element. Iteration
+  # 1 is always planning, so the execution prompt first appears on iteration 2.
+  printf 'UNIQUE_PROMPT_MARKER_42\n' > prompt.txt
+  run_ralph --count 2 --prompt-file prompt.txt --non-interactive --allow-low-progress
+  if [ "$ralph_status" -eq 0 ] \
+    && [ "$(mock_calls)" -eq 2 ] \
+    && grep -q "UNIQUE_PROMPT_MARKER_42" "$MOCK_CODEX_DIR/argv_2"; then
+    t_pass "--prompt-file contents are sent to codex"
+  else
+    t_fail "--prompt-file contents are sent to codex" "status=$ralph_status calls=$(mock_calls)"
+  fi
+}
+
+test_missing_prompt_file_is_clean_error() {
+  # Regression: a missing *-file used to leak a raw `cat: ... No such file`
+  # error and abort under set -e instead of a clean usage error.
+  local flag ok=1
+  for flag in --prompt-file --plan-prompt-file --summary-prompt-file; do
+    # Provide --prompt too so plan/summary cases fail on the file, not on a
+    # missing prompt; --prompt-file's own case still triggers first for it.
+    run_ralph --count 1 --prompt "x" "$flag" "$test_root/nope${flag}.txt" --non-interactive
+    # `--` stops grep option parsing so the pattern (which starts with --) is not
+    # mistaken for a flag.
+    if [ "$ralph_status" -ne 1 ] \
+      || ! grep -q -- "$flag file not found" "$ralph_out" \
+      || grep -q "No such file or directory" "$ralph_out"; then
+      ok=0
+      t_fail "missing $flag is a clean usage error" "status=$ralph_status"
+      break
+    fi
+  done
+  if [ "$ok" -eq 1 ]; then
+    t_pass "missing *-file flags are clean usage errors (no raw cat leak)"
+  fi
+}
+
+test_unknown_long_flag_is_clean_error() {
+  # Regression: an unrecognized long option (typo) before -- used to silently
+  # break parsing and leak to codex as a pass-through arg, quietly changing
+  # behavior (e.g. a typo'd --allow-low-progres leaves the gate enabled).
+  run_ralph --count 1 --prompt "x" --allow-low-progres --non-interactive
+  if [ "$ralph_status" -eq 1 ] \
+    && grep -q "unknown option: --allow-low-progres" "$ralph_out" \
+    && [ "$(mock_calls)" -eq 0 ]; then
+    t_pass "unknown long option is rejected before invoking codex"
+  else
+    t_fail "unknown long option is rejected before invoking codex" "status=$ralph_status calls=$(mock_calls)"
+  fi
+}
+
+test_new_agent_forces_fresh_session() {
+  # --new-agent must override an explicit --session-id and start fresh, so the
+  # first iteration never issues `resume`.
+  run_ralph --count 1 --prompt "continue" --session-id SOME-EXISTING-ID --new-agent \
+    --non-interactive --allow-low-progress
+  local log
+  log="$(default_log)"
+  if [ "$ralph_status" -eq 0 ] \
+    && [ "$(mock_calls)" -eq 1 ] \
+    && ! argv_has 1 "resume" \
+    && ! argv_has 1 "SOME-EXISTING-ID" \
+    && [ -n "$log" ] && grep -q "session_mode=fresh_initial" "$log"; then
+    t_pass "--new-agent forces a fresh session over an explicit --session-id"
+  else
+    t_fail "--new-agent forces a fresh session over an explicit --session-id" "status=$ralph_status calls=$(mock_calls)"
+  fi
+}
+
+test_sandbox_and_bypass_passed_through() {
+  run_ralph --count 1 --prompt "continue" --sandbox workspace-write --bypass-sandbox \
+    --non-interactive --allow-low-progress
+  if [ "$ralph_status" -eq 0 ] \
+    && argv_has 1 "-s" \
+    && argv_has 1 "workspace-write" \
+    && argv_has 1 "--dangerously-bypass-approvals-and-sandbox"; then
+    t_pass "--sandbox and --bypass-sandbox are passed to codex"
+  else
+    t_fail "--sandbox and --bypass-sandbox are passed to codex" "status=$ralph_status"
+  fi
+}
+
+test_summary_phase_fires_on_interval() {
+  # Iteration 1 is always planning; with --summary-every 1 the second iteration
+  # is a summary phase, logged as phase=summary in the iteration_start tracking.
+  run_ralph --count 2 --prompt "continue" --summary-every 1 --non-interactive --allow-low-progress
+  local log
+  log="$(default_log)"
+  if [ "$ralph_status" -eq 0 ] \
+    && [ "$(mock_calls)" -eq 2 ] \
+    && [ -n "$log" ] \
+    && grep -q "event=iteration_start iter=1/2 phase=planning" "$log" \
+    && grep -q "event=iteration_start iter=2/2 phase=summary" "$log"; then
+    t_pass "summary phase fires on the --summary-every interval"
+  else
+    t_fail "summary phase fires on the --summary-every interval" "status=$ralph_status calls=$(mock_calls)"
+  fi
+}
+
+test_interactive_mode_uses_codex_not_exec() {
+  # Default (no --non-interactive) drives `codex` interactively, so the first
+  # recorded argv must not begin with the `exec` subcommand.
+  run_ralph --count 1 --prompt "continue" --allow-low-progress
+  if [ "$ralph_status" -eq 0 ] \
+    && [ "$(mock_calls)" -eq 1 ] \
+    && [ "$(head -n 1 "$MOCK_CODEX_DIR/argv_1")" != "exec" ] \
+    && ! argv_has 1 "exec"; then
+    t_pass "interactive (default) mode runs codex without the exec subcommand"
+  else
+    t_fail "interactive (default) mode runs codex without the exec subcommand" "status=$ralph_status calls=$(mock_calls)"
+  fi
+}
+
 test_done_via_session_assistant_text() {
   # Exercises the jq/session path of done-detection: the visible mock output does
   # NOT end in "done", so completion can only be detected by parsing the assistant
@@ -446,6 +560,13 @@ test_allow_low_progress_bypasses_gate
 test_progress_gate_counts_committed_lines
 test_version_flag_and_sync
 test_missing_flag_value_is_clean_error
+test_prompt_file_is_read
+test_missing_prompt_file_is_clean_error
+test_unknown_long_flag_is_clean_error
+test_new_agent_forces_fresh_session
+test_sandbox_and_bypass_passed_through
+test_summary_phase_fires_on_interval
+test_interactive_mode_uses_codex_not_exec
 test_done_via_session_assistant_text
 "
 

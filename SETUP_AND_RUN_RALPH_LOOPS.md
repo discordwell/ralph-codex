@@ -154,6 +154,8 @@ ralph-loop \
 
 Note: tracking logs append across runs, so resuming with the same `--log-file` keeps the earlier run's history (each run is delimited by `[START]`/`[END]`).
 
+Note: pass arguments meant for `codex` after `--` (e.g. `-- -c model="..."`). An unrecognized `--option` before `--` is treated as a typo and rejected, rather than silently forwarded — this keeps a misspelled loop flag from quietly changing behavior during a long unattended run.
+
 ## 9) Tracking Markers
 Default logs include structured tracking and recovery markers:
 - `tracking event=iteration_start ... session_mode=...`
