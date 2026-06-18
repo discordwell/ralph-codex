@@ -1,6 +1,6 @@
 {
   "name": "ralph-codex",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Iterative Codex Ralph loop harness",
   "bin": {
     "ralph-loop": "scripts/ralph-loop.sh"

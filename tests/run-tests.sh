@@ -353,6 +353,57 @@ test_progress_gate_counts_committed_lines() {
   fi
 }
 
+test_progress_gate_counts_untracked_new_files() {
+  # Regression: `git diff` ignores untracked files, so an agent that writes new
+  # files (modules, tests, docs) but has not staged them registered as zero
+  # progress and tripped the gate even though it had done real work. New untracked
+  # *text* files must now count toward progress.
+  #
+  # This also pins the exclusion: the harness writes .ralph/session-state.md and a
+  # .ralph/ralph-loop-*.log into this work dir, which is NOT gitignored in the test
+  # sandbox, so a naive untracked count would add their lines too and the total
+  # would exceed 6. A clean 6 proves only the agent's new file was counted.
+  init_git_identity
+  printf 'seed\n' > seed.txt
+  git add seed.txt
+  git commit -qm seed
+  # The action writes a NEW 6-line file but never stages or commits it.
+  set_action 1 'printf "a\nb\nc\nd\ne\nf\n" > newmod.txt'
+  run_ralph --count 1 --prompt "continue" --non-interactive \
+    --progress-window 1 --min-delta-lines 5
+  # The file is still untracked afterward, proving it was counted without staging.
+  if [ "$ralph_status" -eq 0 ] \
+    && [ "$(git status --short -- newmod.txt)" = "?? newmod.txt" ] \
+    && grep -q "^total_changed_lines: 6$" .ralph/session-state.md; then
+    t_pass "progress gate counts untracked new-file lines (excludes own state/log)"
+  else
+    t_fail "progress gate counts untracked new-file lines (excludes own state/log)" "status=$ralph_status total=$(grep '^total_changed_lines:' .ralph/session-state.md 2>/dev/null)"
+  fi
+}
+
+test_progress_gate_skips_untracked_binary_files() {
+  # A new untracked *binary* file must not inflate progress: git reports binary
+  # churn as `-` (counted 0), and the untracked count mirrors that by skipping
+  # files grep flags as binary. Without the skip, a stray binary blob would let an
+  # otherwise-idle iteration sail through the gate.
+  init_git_identity
+  printf 'seed\n' > seed.txt
+  git add seed.txt
+  git commit -qm seed
+  # Write a NUL-containing binary file (no real line-based progress).
+  set_action 1 'printf "\x00\x01\x02\x00bin\x00" > blob.bin'
+  run_ralph --count 1 --prompt "continue" --non-interactive \
+    --progress-window 1 --min-delta-lines 5
+  # min-delta is 5 and the binary contributes 0, so the gate must fail the run.
+  if [ "$ralph_status" -eq 1 ] \
+    && grep -q "progress gate failed" "$ralph_out" \
+    && [ "$(git status --short -- blob.bin)" = "?? blob.bin" ]; then
+    t_pass "untracked binary files are not counted as progress"
+  else
+    t_fail "untracked binary files are not counted as progress" "status=$ralph_status"
+  fi
+}
+
 test_version_flag_and_sync() {
   run_ralph --version
   if [ "$ralph_status" -ne 0 ] \
@@ -558,6 +609,8 @@ test_default_tracking_log_and_state_file
 test_progress_gate_blocks_low_progress
 test_allow_low_progress_bypasses_gate
 test_progress_gate_counts_committed_lines
+test_progress_gate_counts_untracked_new_files
+test_progress_gate_skips_untracked_binary_files
 test_version_flag_and_sync
 test_missing_flag_value_is_clean_error
 test_prompt_file_is_read

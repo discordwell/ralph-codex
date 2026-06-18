@@ -58,10 +58,17 @@ At run start the harness records `base_commit` (the current `HEAD`).
 `count_changed_lines` then sums `git diff --numstat <base_commit>`, i.e. total
 churn — committed, staged, and unstaged — since the run began, so committing as
 you go still counts as progress. (When the repo has no commits yet there is no
-`HEAD`, so it falls back to working-tree-only churn.) Every `--progress-window`
-iterations the delta since the last checkpoint must reach `--min-delta-lines` or
-the run aborts (exit 1). The basis is recorded as `progress_basis` in the state
-file. Use `--allow-low-progress` to disable the gate entirely.
+`HEAD`, so it falls back to working-tree-only churn.) Because `git diff` only
+reports *tracked* files, the count adds the lines of any untracked, non-ignored
+**new** files on top (`count_untracked_lines`); otherwise an agent that writes
+new modules/tests/docs but has not staged them would read as zero progress and
+falsely trip the gate. Untracked binaries are skipped (counted 0, matching how
+`git diff --numstat` reports `-` for binary), and the harness's own state/log
+files are excluded so its bookkeeping never reads as agent progress. Every
+`--progress-window` iterations the delta since the last checkpoint must reach
+`--min-delta-lines` or the run aborts (exit 1). The basis is recorded as
+`progress_basis` in the state file. Use `--allow-low-progress` to disable the
+gate entirely.
 
 ## Files written (in the target repo)
 

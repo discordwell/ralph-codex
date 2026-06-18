@@ -114,7 +114,7 @@ default_reasoning_effort="high"
 default_plan_reasoning_effort="extra_high"
 done_sentinel="done"
 # Keep in sync with package.json "version" (tests/run-tests.sh asserts this).
-ralph_loop_version="0.2.1"
+ralph_loop_version="0.2.2"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -349,6 +349,24 @@ if [[ -z "$log_file" ]]; then
 fi
 
 mkdir -p "$(dirname "$state_file")" "$(dirname "$log_file")"
+
+abspath() {
+  # Resolve a path to absolute form for comparison against git's repo-relative
+  # `ls-files` output. No realpath/readlink -f on macOS stock, and the targets
+  # need not exist yet, so just anchor relative paths at the repo root.
+  case "$1" in
+    /*) printf '%s\n' "$1" ;;
+    *)  printf '%s/%s\n' "$repo_root" "$1" ;;
+  esac
+}
+# Absolute paths of the harness's own bookkeeping files. The untracked-line part
+# of the progress count must never count these as agent progress: they are
+# usually gitignored (so git's --exclude-standard already drops them), but not
+# every target repo gitignores .ralph/, and the harness rewrites the state file
+# every iteration.
+state_file_abs="$(abspath "$state_file")"
+log_file_abs="$(abspath "$log_file")"
+
 codex_sessions_dir="${HOME}/.codex/sessions"
 codex_session_file=""
 
@@ -762,6 +780,32 @@ fi
 # HEAD yet (e.g. a repo with no commits).
 base_commit="$(git -C "$repo_root" rev-parse --verify --quiet HEAD 2>/dev/null || true)"
 
+count_untracked_lines() {
+  # `git diff` only reports changes to *tracked* files, so a brand-new file the
+  # agent created but has not staged is invisible to the diff-based count and
+  # registers as zero progress. That can make the progress gate abort a loop that
+  # is in fact doing real work (writing new modules, tests, docs). Count the lines
+  # of each untracked, non-ignored file so new-file work counts the same as a
+  # committed new file, whose full line count git already reports as added churn.
+  #
+  # --exclude-standard honors .gitignore (so a repo that gitignores .ralph/ drops
+  # the harness's own state/log here); the explicit state/log skip below covers
+  # repos that do not. Text files only: binaries are skipped (grep -I reports no
+  # match for them), matching how `git diff --numstat` prints `-` for binary.
+  local total=0 file path lines
+  while IFS= read -r -d '' file; do
+    path="$repo_root/$file"
+    if [[ "$path" == "$state_file_abs" || "$path" == "$log_file_abs" ]]; then
+      continue
+    fi
+    if LC_ALL=C grep -Iq . -- "$path" 2>/dev/null; then
+      lines="$(awk 'END { print NR + 0 }' "$path" 2>/dev/null || echo 0)"
+      total=$((total + lines))
+    fi
+  done < <(git -C "$repo_root" ls-files --others --exclude-standard -z 2>/dev/null)
+  echo "$total"
+}
+
 count_changed_lines() {
   local diff_args=(diff --numstat)
   # Use the baseline only while it is still a reachable commit object. An agent
@@ -771,8 +815,11 @@ count_changed_lines() {
   if [[ -n "$base_commit" ]] && git -C "$repo_root" cat-file -e "${base_commit}^{commit}" 2>/dev/null; then
     diff_args+=("$base_commit")
   fi
-  git -C "$repo_root" "${diff_args[@]}" 2>/dev/null \
-    | awk '{sum += ($1 ~ /^[0-9]+$/ ? $1 : 0) + ($2 ~ /^[0-9]+$/ ? $2 : 0)} END {print sum+0}'
+  local tracked untracked
+  tracked="$(git -C "$repo_root" "${diff_args[@]}" 2>/dev/null \
+    | awk '{sum += ($1 ~ /^[0-9]+$/ ? $1 : 0) + ($2 ~ /^[0-9]+$/ ? $2 : 0)} END {print sum+0}')"
+  untracked="$(count_untracked_lines)"
+  echo $((tracked + untracked))
 }
 
 window_start_lines="$(count_changed_lines)"

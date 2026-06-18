@@ -145,7 +145,7 @@ ralph-loop \
 ## 8) Helpful Flags
 - `--new-agent`: force a fresh Codex session instead of `resume`.
 - `--summary-every N`: periodic summary turns.
-- `--progress-window N` + `--min-delta-lines X`: progress gate. Counts churn (committed + staged + unstaged) since the run's starting commit, so committing mid-run still registers as progress. `--allow-low-progress` disables the gate.
+- `--progress-window N` + `--min-delta-lines X`: progress gate. Counts churn (committed + staged + unstaged, plus lines in untracked new text files) since the run's starting commit, so committing mid-run — or writing new files you haven't staged yet — still registers as progress. `--allow-low-progress` disables the gate.
 - `--completion-poll-interval` / `--completion-timeout`: turn completion polling behavior.
 - `--state-file`: isolate loop state per objective.
 - `--sleep N`: pause N whole seconds between iterations.
