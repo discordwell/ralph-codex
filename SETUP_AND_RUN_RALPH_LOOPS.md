@@ -20,12 +20,16 @@ npm install -g github:discordwell/ralph-codex
 - `codex` CLI installed and authenticated.
 - `git` and `rg` (ripgrep) installed (the script uses them for repo state and
   session lookups). `jq` is optional and only sharpens done-detection.
-- A target repo where Codex should do work.
+- A target **git** repo where Codex should do work — run `ralph-loop` from
+  inside its work tree. (A freshly `git init`-ed repo with no commits yet is
+  fine; the progress gate falls back to working-tree churn until the first
+  commit.)
 
-`ralph-loop` verifies `codex`, `git`, and `rg` are on `PATH` at startup and
-exits with a clear error if any is missing, so a typo'd `PATH` or a missing tool
-fails immediately instead of silently wasting a long unattended run. (`--help`
-and `--version` work without them.)
+`ralph-loop` verifies `codex`, `git`, and `rg` are on `PATH` at startup and that
+the working directory is a git repository, exiting with a clear error if a tool
+is missing or you are not inside a repo — so a typo'd `PATH`, a missing tool, or
+the wrong directory fails immediately instead of silently wasting a long
+unattended run. (`--help` and `--version` work without any of them.)
 
 Check:
 ```bash

@@ -650,6 +650,58 @@ test_whitespace_prompt_rejected() {
   fi
 }
 
+test_requires_git_repo() {
+  # Regression: the progress gate, the context-prompt git snapshot, and the
+  # churn baseline all assume a git work tree. Run from a non-repo dir, the
+  # harness used to degrade silently — 0 churn reads as a misleading "progress
+  # gate failed", or with --allow-low-progress as a meaningless run. It must now
+  # fail fast with a clear "not a git repository" error before invoking codex,
+  # in the same spirit as the missing-dependency check. --allow-low-progress is
+  # passed to prove the rejection is the repo check, not the progress gate.
+  local nogit="$test_root/nogit"
+  mkdir -p "$nogit"
+  cd "$nogit" || { t_fail "non-git working dir fails fast" "cd failed"; return; }
+  # Guard: if some ancestor of the sandbox is itself a git repo, the check would
+  # (correctly) pass and this test would be meaningless — skip, as other
+  # environment-dependent tests do.
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    t_pass "requires a git repository (skipped: sandbox is inside a repo)"
+    return
+  fi
+  run_ralph --count 3 --prompt "continue" --non-interactive --allow-low-progress
+  if [ "$ralph_status" -ne 0 ] \
+    && grep -q "not a git repository" "$ralph_out" \
+    && [ "$(mock_calls)" -eq 0 ]; then
+    t_pass "non-git working dir fails fast before invoking codex"
+  else
+    t_fail "non-git working dir fails fast before invoking codex" "status=$ralph_status calls=$(mock_calls)"
+  fi
+}
+
+test_plan_and_summary_prompt_files_are_read() {
+  # Coverage: only --prompt-file's success path was exercised. The plan and
+  # summary prompt files flow through the same require_readable_file + cat path
+  # but route into different phases — iteration 1 (planning) and every
+  # --summary-every-th iteration (summary). With --summary-every 1 and count 2,
+  # iter1 is planning and iter2 is summary, so each file's marker must appear in
+  # exactly its own phase's argv and not the other's.
+  printf 'PLAN_MARKER_AAA\n' > plan.txt
+  printf 'SUMMARY_MARKER_BBB\n' > summary.txt
+  run_ralph --count 2 --prompt "continue" \
+    --plan-prompt-file plan.txt --summary-prompt-file summary.txt \
+    --summary-every 1 --non-interactive --allow-low-progress
+  if [ "$ralph_status" -eq 0 ] \
+    && [ "$(mock_calls)" -eq 2 ] \
+    && grep -q "PLAN_MARKER_AAA" "$MOCK_CODEX_DIR/argv_1" \
+    && grep -q "SUMMARY_MARKER_BBB" "$MOCK_CODEX_DIR/argv_2" \
+    && ! grep -q "SUMMARY_MARKER_BBB" "$MOCK_CODEX_DIR/argv_1" \
+    && ! grep -q "PLAN_MARKER_AAA" "$MOCK_CODEX_DIR/argv_2"; then
+    t_pass "--plan-prompt-file/--summary-prompt-file route to planning/summary phases"
+  else
+    t_fail "--plan-prompt-file/--summary-prompt-file route to planning/summary phases" "status=$ralph_status calls=$(mock_calls)"
+  fi
+}
+
 # --- runner ------------------------------------------------------------------
 
 ORIG_HOME="$HOME"
@@ -687,6 +739,8 @@ test_done_via_session_assistant_text
 test_missing_codex_fails_fast
 test_empty_prompt_file_is_clean_error
 test_whitespace_prompt_rejected
+test_requires_git_repo
+test_plan_and_summary_prompt_files_are_read
 "
 
 for t in $tests; do

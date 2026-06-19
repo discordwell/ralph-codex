@@ -93,6 +93,17 @@ the loop treats a non-zero codex exit as a normal "keep going" result, so a
 missing `codex` would otherwise burn through every requested iteration — and,
 with `--allow-low-progress`, still exit 0. Bash 3.2+ (macOS stock) is supported.
 
+Immediately after the dependency check, `require_git_repo` confirms the working
+directory is a git work tree (`git rev-parse --is-inside-work-tree`). The whole
+harness is built on git — the progress gate measures churn since `base_commit`,
+the context prompt embeds `git status`/`diff --stat`, and the state file records
+diff stats — so outside a repo every git call degrades silently to empty/zero
+and the progress gate aborts with a misleading "progress gate failed" that reads
+as if the agent did nothing. Failing fast with a clear "not a git repository"
+message is the same trade as `require_commands`. A repo with **no commits yet**
+is still a valid work tree, so the no-`HEAD` path the progress gate already
+handles (working-tree-only churn) is unaffected.
+
 `-h/--help` and `-V/--version` print and exit 0; the script version
 (`ralph_loop_version`) is kept in lockstep with `package.json` by a test.
 Argument handling fails fast and cleanly rather than silently or with a raw

@@ -101,6 +101,25 @@ require_commands() {
   fi
 }
 
+require_git_repo() {
+  # require_git_repo <dir>
+  # The harness's tracking is built on git: the progress gate measures churn
+  # since base_commit, the context prompt embeds `git status`/`diff --stat`, and
+  # recovery/state bookkeeping all assume a work tree. Outside one, every git
+  # call silently degrades to empty/zero — the prompt loses its repo snapshot and
+  # the progress gate reads 0 churn and (unless --allow-low-progress) aborts with
+  # a misleading "progress gate failed" that looks like the agent did nothing.
+  # Detect it up front with a clear message, in the same fail-fast spirit as
+  # require_commands. A repo with no commits yet is still a valid work tree
+  # (rev-parse --is-inside-work-tree succeeds there), so the no-HEAD path the
+  # progress gate already handles keeps working.
+  if ! git -C "$1" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "Error: not a git repository: $1" >&2
+    echo "ralph-loop tracks progress via git; run it from inside the target repo's work tree." >&2
+    exit 1
+  fi
+}
+
 iterations=1
 prompt=""
 prompt_file=""
@@ -137,7 +156,7 @@ default_reasoning_effort="high"
 default_plan_reasoning_effort="extra_high"
 done_sentinel="done"
 # Keep in sync with package.json "version" (tests/run-tests.sh asserts this).
-ralph_loop_version="0.2.3"
+ralph_loop_version="0.2.4"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -375,6 +394,9 @@ sleep_seconds=$((10#$sleep_seconds))
 # Inputs validated; check the environment before doing any work (-h/--help and
 # -V/--version have already exited above, so they never need codex installed).
 require_commands codex git rg
+# Everything below (progress gate, context prompt, state bookkeeping) assumes a
+# git work tree; reject a non-repo cwd now rather than degrading silently mid-run.
+require_git_repo "$repo_root"
 
 codex_args=("$@")
 
@@ -421,7 +443,10 @@ resolve_session_file() {
     return 0
   fi
 
-  codex_session_file="$(rg --files "$codex_sessions_dir" -g '*.jsonl' | rg "$sid" | head -n 1 || true)"
+  # `rg --files` on a not-yet-created ~/.codex/sessions writes an IO error to
+  # stderr that would leak into the harness's output (and a nohup log); silence
+  # it — a missing dir simply means no matching session file yet.
+  codex_session_file="$(rg --files "$codex_sessions_dir" -g '*.jsonl' 2>/dev/null | rg "$sid" | head -n 1 || true)"
   echo "$codex_session_file"
 }
 
