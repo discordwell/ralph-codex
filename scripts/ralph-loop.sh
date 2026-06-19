@@ -78,6 +78,29 @@ require_readable_file() {
   fi
 }
 
+require_commands() {
+  # require_commands <cmd...>
+  # Verify the harness's hard dependencies are on PATH before the loop starts.
+  # Without this, a missing `codex` (or `git`/`rg`) is not noticed until mid-run:
+  # each iteration fails with command-not-found and, because the loop treats a
+  # non-zero codex exit as a normal "keep going" result, it burns through every
+  # requested iteration — and with --allow-low-progress still exits 0, masking
+  # the problem entirely. Failing fast turns a silently wasted long unattended
+  # run into one clear up-front error. `jq` is intentionally not required here:
+  # done-detection degrades gracefully to output-file matching without it.
+  local missing=() cmd
+  for cmd in "$@"; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      missing+=("$cmd")
+    fi
+  done
+  if (( ${#missing[@]} > 0 )); then
+    echo "Error: required command(s) not found on PATH: ${missing[*]}." >&2
+    echo "ralph-loop needs codex, git, and rg installed (jq is optional)." >&2
+    exit 1
+  fi
+}
+
 iterations=1
 prompt=""
 prompt_file=""
@@ -114,7 +137,7 @@ default_reasoning_effort="high"
 default_plan_reasoning_effort="extra_high"
 done_sentinel="done"
 # Keep in sync with package.json "version" (tests/run-tests.sh asserts this).
-ralph_loop_version="0.2.2"
+ralph_loop_version="0.2.3"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -271,7 +294,15 @@ if [[ "$summary_prompt_file" != "" ]]; then
   summary_prompt="$(cat "$summary_prompt_file")"
 fi
 
-if [[ "$prompt" == "" ]]; then
+# Stripping all whitespace tells an empty prompt apart from a whitespace-only
+# one (e.g. an inline `--prompt "   "` or a prompt file containing only blank
+# lines), both of which are useless to send. When a --prompt-file was given,
+# point at it specifically rather than the generic "use --prompt" message, which
+# reads as if no prompt flag was passed at all.
+if [[ -z "${prompt//[[:space:]]/}" ]]; then
+  if [[ "$prompt_file" != "" ]]; then
+    usage_error "--prompt-file has no usable content: $prompt_file"
+  fi
   usage_error "a prompt is required. Use --prompt or --prompt-file."
 fi
 
@@ -340,6 +371,10 @@ if ! is_uint "$sleep_seconds"; then
   exit 1
 fi
 sleep_seconds=$((10#$sleep_seconds))
+
+# Inputs validated; check the environment before doing any work (-h/--help and
+# -V/--version have already exited above, so they never need codex installed).
+require_commands codex git rg
 
 codex_args=("$@")
 

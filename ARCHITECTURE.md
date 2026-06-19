@@ -83,9 +83,15 @@ gate entirely.
 
 Model defaults (`gpt-5.3-codex-spark`, reasoning effort `high`, planning
 `extra_high`) are injected only when not overridden via `-m/--model` or
-`-c/--config` after `--`. Hard dependencies: `git`, `rg` (session lookups and
-overflow detection); `jq` is optional (assistant-text done detection degrades
-to output-file matching without it). Bash 3.2+ (macOS stock) is supported.
+`-c/--config` after `--`. Hard dependencies: `codex`, `git`, and `rg` (session
+lookups and overflow detection); `jq` is optional (assistant-text done detection
+degrades to output-file matching without it). These hard dependencies are
+verified on `PATH` up front (`require_commands`, after argument parsing so
+`-h/--help` and `-V/--version` still work without them); a missing one is a
+clean one-line error rather than a mid-run failure. The latter matters because
+the loop treats a non-zero codex exit as a normal "keep going" result, so a
+missing `codex` would otherwise burn through every requested iteration — and,
+with `--allow-low-progress`, still exit 0. Bash 3.2+ (macOS stock) is supported.
 
 `-h/--help` and `-V/--version` print and exit 0; the script version
 (`ralph_loop_version`) is kept in lockstep with `package.json` by a test.
@@ -98,6 +104,10 @@ error:
   path (`require_readable_file`) before reading it, so a missing or unreadable
   file is a usage error instead of a raw `cat:` message that aborts under
   `set -e`.
+- An empty or whitespace-only execution prompt (no flag, an inline
+  `--prompt "   "`, or a `--prompt-file` of only blank lines) is rejected up
+  front; a blank `--prompt-file` reports the file by name rather than the generic
+  "a prompt is required" message.
 - An unrecognized long option *before* `--` (e.g. a typo'd `--allow-low-progres`)
   is a usage error, not a silent pass-through to codex that would quietly change
   loop behavior. Arguments intended for codex must come after `--`; anything

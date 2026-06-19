@@ -587,6 +587,69 @@ test_done_via_session_assistant_text() {
   fi
 }
 
+test_missing_codex_fails_fast() {
+  # Regression: a missing `codex` used to go unnoticed until mid-run. Each
+  # iteration failed with command-not-found, and because the loop treats a
+  # non-zero codex exit as a normal "keep going" result it burned through every
+  # requested iteration — and with --allow-low-progress still exited 0, masking
+  # the problem. The harness must now verify its hard deps up front and fail
+  # immediately, before any iteration.
+  #
+  # Build a restricted PATH with git + rg + coreutils but no codex, independent
+  # of whatever is installed system-wide, so the check actually fires here (the
+  # test machine may well have a real codex on its normal PATH).
+  local limited="$test_root/limited_bin"
+  mkdir -p "$limited"
+  ln -sf "$(command -v git)" "$limited/git"
+  ln -sf "$(command -v rg)" "$limited/rg"
+  local restore="$PATH"
+  export PATH="$limited:/usr/bin:/bin"
+  if command -v codex >/dev/null 2>&1; then
+    # A codex leaked into the restricted PATH (e.g. installed under /usr/bin);
+    # skip rather than report a misleading result.
+    export PATH="$restore"
+    t_pass "missing codex fails fast (skipped: codex present in restricted PATH)"
+    return
+  fi
+  run_ralph --count 5 --prompt "continue" --non-interactive --allow-low-progress
+  export PATH="$restore"
+  if [ "$ralph_status" -ne 0 ] \
+    && grep -q "not found on PATH: codex" "$ralph_out" \
+    && [ "$(mock_calls)" -eq 0 ]; then
+    t_pass "missing codex dependency fails fast before any iteration"
+  else
+    t_fail "missing codex dependency fails fast before any iteration" "status=$ralph_status calls=$(mock_calls)"
+  fi
+}
+
+test_empty_prompt_file_is_clean_error() {
+  # A --prompt-file that exists but has no usable content (empty or whitespace
+  # only) is reported as such, not as the generic "a prompt is required" message
+  # (which reads as if no prompt flag was given at all). Nothing should run.
+  printf '   \n\t\n' > blank-prompt.txt
+  run_ralph --count 1 --prompt-file blank-prompt.txt --non-interactive --allow-low-progress
+  if [ "$ralph_status" -eq 1 ] \
+    && grep -q -- "--prompt-file has no usable content" "$ralph_out" \
+    && [ "$(mock_calls)" -eq 0 ]; then
+    t_pass "empty/whitespace --prompt-file is a clean, specific usage error"
+  else
+    t_fail "empty/whitespace --prompt-file is a clean, specific usage error" "status=$ralph_status calls=$(mock_calls)"
+  fi
+}
+
+test_whitespace_prompt_rejected() {
+  # A --prompt that is only whitespace is as useless as an empty one and used to
+  # be accepted as a valid prompt; it must now be rejected up front.
+  run_ralph --count 1 --prompt "   " --non-interactive --allow-low-progress
+  if [ "$ralph_status" -eq 1 ] \
+    && grep -q "a prompt is required" "$ralph_out" \
+    && [ "$(mock_calls)" -eq 0 ]; then
+    t_pass "whitespace-only --prompt is rejected"
+  else
+    t_fail "whitespace-only --prompt is rejected" "status=$ralph_status calls=$(mock_calls)"
+  fi
+}
+
 # --- runner ------------------------------------------------------------------
 
 ORIG_HOME="$HOME"
@@ -621,6 +684,9 @@ test_sandbox_and_bypass_passed_through
 test_summary_phase_fires_on_interval
 test_interactive_mode_uses_codex_not_exec
 test_done_via_session_assistant_text
+test_missing_codex_fails_fast
+test_empty_prompt_file_is_clean_error
+test_whitespace_prompt_rejected
 "
 
 for t in $tests; do

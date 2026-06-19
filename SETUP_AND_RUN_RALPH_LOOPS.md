@@ -18,12 +18,19 @@ npm install -g github:discordwell/ralph-codex
 
 ## 1) Prerequisites
 - `codex` CLI installed and authenticated.
-- `rg` (ripgrep) installed (the script uses it for session lookups).
+- `git` and `rg` (ripgrep) installed (the script uses them for repo state and
+  session lookups). `jq` is optional and only sharpens done-detection.
 - A target repo where Codex should do work.
+
+`ralph-loop` verifies `codex`, `git`, and `rg` are on `PATH` at startup and
+exits with a clear error if any is missing, so a typo'd `PATH` or a missing tool
+fails immediately instead of silently wasting a long unattended run. (`--help`
+and `--version` work without them.)
 
 Check:
 ```bash
 codex --version
+git --version
 rg --version
 ```
 
