@@ -12,7 +12,7 @@ Usage:
   ./ralph-loop.sh --count <N> --prompt <PROMPT> [--prompt-file <PATH>] [--session-id <SESSION_ID>] [--new-agent]
     [--plan-prompt <PROMPT>] [--plan-prompt-file <PATH>] [--state-file <PATH>]
     [--summary-prompt <PROMPT>] [--summary-prompt-file <PATH>] [--summary-every <N>]
-    [--no-context-overflow-recovery] [--sleep <SECONDS>]
+    [--no-context-overflow-recovery] [--sleep <SECONDS>] [--max-seconds <N>]
     [--non-interactive] [--sandbox <read-only|workspace-write|danger-full-access>]
     [--bypass-sandbox] [--progress-window <N>] [--min-delta-lines <N>] [--allow-low-progress]
     [--completion-poll-interval <SECONDS>] [--completion-timeout <SECONDS>] [--log-file <PATH>] -- [codex args...]
@@ -32,10 +32,17 @@ Examples:
   ./ralph-loop.sh --count 20 --prompt "..." --session-id <SESSION_ID> --non-interactive --bypass-sandbox -- -c model="gpt-5.3-codex-spark"
   ./ralph-loop.sh --count 20 --prompt "..." --session-id <SESSION_ID> --non-interactive --completion-poll-interval 5 --completion-timeout 120 -- -c model="gpt-5.3-codex-spark"
   ./ralph-loop.sh --count 25 --prompt "..." --session-id <SESSION_ID> --summary-every 25 -- -c model="gpt-5.3-codex-spark"
+  ./ralph-loop.sh --count 200 --prompt "..." --max-seconds 3600 -- -c model="gpt-5.3-codex-spark"
 
 Other:
   -h, --help       Print this help and exit.
   -V, --version    Print the ralph-loop version and exit.
+
+Limits:
+  --max-seconds <N>  Wall-clock budget. After any iteration, if the loop has run
+                     at least N seconds it stops gracefully (exit 0) without
+                     starting another; an in-flight turn always finishes.
+                     0 (default) means no limit.
 
 Done condition:
   If Codex replies with exactly "done" (single token, no extra text), the loop exits early with success.
@@ -129,6 +136,7 @@ summary_prompt=""
 summary_prompt_file=""
 summary_every=25
 sleep_seconds=0
+max_seconds=0
 session_id=""
 interactive=1
 log_file=""
@@ -156,7 +164,7 @@ default_reasoning_effort="high"
 default_plan_reasoning_effort="extra_high"
 done_sentinel="done"
 # Keep in sync with package.json "version" (tests/run-tests.sh asserts this).
-ralph_loop_version="0.2.4"
+ralph_loop_version="0.3.0"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -271,6 +279,11 @@ while [[ $# -gt 0 ]]; do
     -s|--sleep)
       require_arg "$#" "$1"
       sleep_seconds="$2"
+      shift 2
+      ;;
+    --max-seconds)
+      require_arg "$#" "$1"
+      max_seconds="$2"
       shift 2
       ;;
     --)
@@ -390,6 +403,12 @@ if ! is_uint "$sleep_seconds"; then
   exit 1
 fi
 sleep_seconds=$((10#$sleep_seconds))
+
+if ! is_uint "$max_seconds"; then
+  echo "Error: --max-seconds must be zero or greater (whole seconds; 0 = no limit)." >&2
+  exit 1
+fi
+max_seconds=$((10#$max_seconds))
 
 # Inputs validated; check the environment before doing any work (-h/--help and
 # -V/--version have already exited above, so they never need codex installed).
@@ -721,6 +740,7 @@ progress_basis: ${base_commit:-working-tree}
 progress_window: $progress_window
 progress_goal: $min_delta_lines
 progress_delta_since_window: $delta_in_window
+deadline_seconds: $max_seconds
 updated_at: $(date -u +'%Y-%m-%dT%H:%M:%SZ')
 summary_count: $summary_count
 tracking_log_file: $log_file
@@ -921,7 +941,7 @@ log_tracking() {
 
 # Append so resuming with the same --log-file keeps prior runs' tracking
 # history; each run is delimited by its own [START]/[END] markers.
-echo "[START] run=$run_id count=$iterations session=${session_id:-last} state_file=$state_file mode=$([ "$interactive" -eq 1 ] && echo interactive || echo non-interactive) new_agent=$new_agent log_file=$log_file auto_log_file=$auto_log_file" >> "$log_file"
+echo "[START] run=$run_id count=$iterations max_seconds=$max_seconds session=${session_id:-last} state_file=$state_file mode=$([ "$interactive" -eq 1 ] && echo interactive || echo non-interactive) new_agent=$new_agent log_file=$log_file auto_log_file=$auto_log_file" >> "$log_file"
 log_tracking "event=config recovery_enabled=$recover_context_overflow"
 
 run_index=0
@@ -940,6 +960,11 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+
+# Wall-clock start for the optional --max-seconds budget. The deadline is checked
+# between iterations (an in-flight codex turn is never interrupted), so it bounds
+# when a *new* iteration may start rather than the total including the final turn.
+loop_start_epoch="$(date +%s)"
 
 while (( run_index < iterations )); do
   run_index=$((run_index + 1))
@@ -1064,6 +1089,18 @@ while (( run_index < iterations )); do
   if (( done_detected == 1 )); then
     echo "[RALPH-LOOP] completion sentinel detected (${done_sentinel}); ending loop early at iteration $run_index." >&2
     echo "[DONE] run=$run_id iter=${run_index}/${iterations} sentinel=${done_sentinel}" >> "$log_file"
+    break
+  fi
+
+  # Wall-clock budget: a graceful stop (exit 0), like the done sentinel — not a
+  # gate failure. Checked after the done check and before the progress gate, so a
+  # user-set time budget always wins over a gate abort. iteration_end was just
+  # captured above, so no extra `date` call is needed.
+  if (( max_seconds > 0 && iteration_end - loop_start_epoch >= max_seconds )); then
+    elapsed_total=$((iteration_end - loop_start_epoch))
+    echo "[RALPH-LOOP] wall-clock budget reached (${elapsed_total}s >= ${max_seconds}s); ending loop after iteration $run_index." >&2
+    echo "[DEADLINE] run=$run_id iter=${run_index}/${iterations} elapsed=${elapsed_total}s budget=${max_seconds}s" >> "$log_file"
+    log_tracking "event=deadline_reached iter=${run_index}/${iterations} elapsed=${elapsed_total}s budget=${max_seconds}s"
     break
   fi
 

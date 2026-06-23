@@ -1,5 +1,7 @@
 # ralph-codex
 
+[![CI](https://github.com/discordwell/ralph-codex/actions/workflows/ci.yml/badge.svg)](https://github.com/discordwell/ralph-codex/actions/workflows/ci.yml)
+
 Utilities and docs for running iterative Codex "Ralph loops".
 
 ## Contents
@@ -38,8 +40,10 @@ touches real Codex sessions. Set `RALPH_LOOP_BIN` to test an installed copy.
 - Logs append across runs: reusing the same `--log-file` (e.g. on resume) keeps prior history, with each run delimited by `[START]`/`[END]` markers.
 - Context-window recovery is enabled by default; disable with `--no-context-overflow-recovery`.
 - The progress gate counts churn (committed + staged + unstaged, plus lines in untracked new text files) since the run's starting commit, so committing as you go — or writing new files you haven't staged yet — still counts as progress; `--allow-low-progress` disables the gate.
+- `--max-seconds <N>` sets an optional wall-clock budget: after any iteration, once the loop has run at least N seconds it stops gracefully (exit 0) without starting another; an in-flight turn always finishes. `0` (default) means no limit. This bounds long unattended runs by time/cost, complementing the work-based progress gate and context-based overflow recovery.
 - Tracking logs include:
   - `[RECOVER]` when a context-overflow failure is detected.
+  - `[DEADLINE]` when the `--max-seconds` budget is reached.
   - `tracking event=iteration_start` with the per-iteration session mode (`resume_session`, `resume_last`, `fresh_initial`, `fresh_recovery`).
 
 Manual local path still works:

@@ -70,6 +70,22 @@ files are excluded so its bookkeeping never reads as agent progress. Every
 `progress_basis` in the state file. Use `--allow-low-progress` to disable the
 gate entirely.
 
+## Wall-clock budget
+
+`--max-seconds <N>` caps how long the loop runs. `loop_start_epoch` is captured
+just before the loop; the elapsed time is checked **between iterations** — after
+the done check and *before* the progress gate — so a budget stop is a graceful
+success exit (like the `done` sentinel), and an explicit time budget always wins
+over a gate abort. An in-flight codex turn is never interrupted: the deadline
+bounds when a *new* iteration may start, so the iteration already running (and
+its final turn) always finishes. `0` (the default) means no limit and the check
+is skipped entirely, so existing behavior is unchanged. The configured budget is
+recorded as `deadline_seconds` in the state file; reaching it logs a `[DEADLINE]`
+marker and an `event=deadline_reached` tracking line with the elapsed seconds.
+This is the time-based counterpart to the progress gate (work-based) and
+context-overflow recovery (context-based): together they bound a long unattended
+run by time, by progress, and by context.
+
 ## Files written (in the target repo)
 
 - `.ralph/session-state.md` (or `--state-file`) — rewritten every iteration;
@@ -77,7 +93,7 @@ gate entirely.
   (the `base_commit` SHA, or `working-tree` when there is no `HEAD`).
 - `.ralph/ralph-loop-<run_id>.log` (or `--log-file`) — append-only tracking
   log: `[START]`/`[END]` run delimiters, per-iteration `tracking event=` lines,
-  `[RECOVER]` and `[DONE]` markers.
+  and `[RECOVER]`, `[DONE]`, and `[DEADLINE]` markers.
 
 ## Defaults & dependencies
 

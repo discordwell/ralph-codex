@@ -160,6 +160,7 @@ ralph-loop \
 - `--completion-poll-interval` / `--completion-timeout`: turn completion polling behavior.
 - `--state-file`: isolate loop state per objective.
 - `--sleep N`: pause N whole seconds between iterations.
+- `--max-seconds N`: wall-clock budget. After any iteration, if the loop has run at least N whole seconds it stops gracefully (a `[DEADLINE]` marker, exit 0) without starting another iteration; an in-flight turn always finishes. `0` (default) means no limit. Useful for bounding the `nohup` overnight runs above by time/cost, not just by iteration count.
 - `--no-context-overflow-recovery`: disable automatic fresh-session recovery after context-window failures.
 - `-h`/`--help`, `-V`/`--version`: print usage or the version and exit.
 
@@ -171,6 +172,7 @@ Note: pass arguments meant for `codex` after `--` (e.g. `-- -c model="..."`). An
 Default logs include structured tracking and recovery markers:
 - `tracking event=iteration_start ... session_mode=...`
 - `[RECOVER] ... reason=context_overflow action=fresh_session_next`
+- `[DEADLINE] ... elapsed=...s budget=...s` (when `--max-seconds` is reached)
 - `tracking event=summary ... context_overflow_recoveries=...`
 
 ## 10) Notes

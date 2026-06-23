@@ -429,7 +429,7 @@ test_missing_flag_value_is_clean_error() {
   # Regression: a value-taking flag given no value used to crash with
   # "$2: unbound variable" under set -u instead of a usage error.
   local flag ok=1
-  for flag in --count --prompt --session-id --sleep --log-file --min-delta-lines; do
+  for flag in --count --prompt --session-id --sleep --max-seconds --log-file --min-delta-lines; do
     run_ralph "$flag"
     if [ "$ralph_status" -ne 1 ] \
       || ! grep -q "option $flag requires a value" "$ralph_out" \
@@ -702,6 +702,37 @@ test_plan_and_summary_prompt_files_are_read() {
   fi
 }
 
+test_rejects_non_numeric_max_seconds() {
+  run_ralph --count 1 --prompt "x" --max-seconds nope --non-interactive
+  if [ "$ralph_status" -eq 1 ] && grep -q -- "--max-seconds must be zero or greater" "$ralph_out"; then
+    t_pass "non-numeric --max-seconds is rejected cleanly"
+  else
+    t_fail "non-numeric --max-seconds is rejected cleanly" "status=$ralph_status"
+  fi
+}
+
+test_max_seconds_stops_loop_early() {
+  # The wall-clock budget is a graceful stop (exit 0), like the done sentinel —
+  # not a gate failure. The mock runs action_1 in the work dir, so make codex
+  # call 1 take ~2s; a 1s budget is then already exceeded when the loop checks
+  # after iteration 1, which must end the run there instead of running all 5
+  # iterations. The state file must record the configured budget.
+  set_action 1 'sleep 2'
+  run_ralph --count 5 --prompt "continue" --non-interactive --allow-low-progress --max-seconds 1
+  local log
+  log="$(default_log)"
+  if [ "$ralph_status" -eq 0 ] \
+    && [ "$(mock_calls)" -eq 1 ] \
+    && [ -n "$log" ] \
+    && grep -q "\[DEADLINE\]" "$log" \
+    && grep -q "event=deadline_reached" "$log" \
+    && grep -q "^deadline_seconds: 1$" .ralph/session-state.md; then
+    t_pass "--max-seconds stops the loop gracefully once the budget is exceeded"
+  else
+    t_fail "--max-seconds stops the loop gracefully once the budget is exceeded" "status=$ralph_status calls=$(mock_calls)"
+  fi
+}
+
 # --- runner ------------------------------------------------------------------
 
 ORIG_HOME="$HOME"
@@ -741,6 +772,8 @@ test_empty_prompt_file_is_clean_error
 test_whitespace_prompt_rejected
 test_requires_git_repo
 test_plan_and_summary_prompt_files_are_read
+test_rejects_non_numeric_max_seconds
+test_max_seconds_stops_loop_early
 "
 
 for t in $tests; do
