@@ -1,0 +1,48 @@
+name: CI
+
+# Runs the bash test suite on every push to main and on pull requests. The
+# matrix covers both userlands the harness targets: Ubuntu (GNU coreutils/sed/
+# awk, modern bash) and macOS (BSD coreutils/sed/awk — the date/sed/grep/mktemp
+# dialect the script is written against, and where its bash 3.2 support matters).
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # ripgrep is a hard dependency of the harness (session lookups, overflow
+      # detection); jq is optional and preinstalled on GitHub runners, so the
+      # jq-only test self-skips if it is ever absent.
+      - name: Install ripgrep (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
+
+      - name: Install ripgrep (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ripgrep
+
+      - name: Show tool versions
+        run: |
+          bash --version | head -1
+          git --version
+          rg --version | head -1
+          jq --version || echo "jq not installed (optional)"
+
+      - name: Syntax check
+        run: bash -n scripts/ralph-loop.sh
+
+      - name: Run test suite
+        run: tests/run-tests.sh
